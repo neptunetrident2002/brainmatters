@@ -79,9 +79,12 @@ export default function ChallengesPage() {
   const [showHintModal,    setShowHintModal]    = useState(false);
   const [showRefreshModal, setShowRefreshModal] = useState(false);
   const timerRef = useRef<any>(null);
-  const tier     = getDifficultyTier();
+  const [tier,   setTier]   = useState<string>("beginner");
+  const [isFree, setIsFree] = useState<boolean>(true);
 
   useEffect(() => {
+    setTier(getDifficultyTier());
+    setIsFree(refreshIsFree());
     const { credits: c } = getCredits();
     setCredits(c);
     setFreeLeft(freeRefreshesRemaining());
@@ -124,6 +127,7 @@ export default function ChallengesPage() {
     setGenerating(true);
     incrementRefreshCount();
     setFreeLeft(freeRefreshesRemaining());
+    setIsFree(refreshIsFree());
     const nc = fromTask(await generateTask());
     setChallenges(prev => { const u = [nc,...prev]; saveChallenges(u); return u; });
     setGenerating(false);
@@ -199,7 +203,6 @@ export default function ChallengesPage() {
   const active     = challenges.find(c => c.id===activeId);
   const done       = challenges.filter(c => c.status==="done");
   const activeHint = active ? hints[active.id] : null;
-  const isFree     = refreshIsFree();
 
   return (
     <div style={{ maxWidth:680, margin:"0 auto" }}>
