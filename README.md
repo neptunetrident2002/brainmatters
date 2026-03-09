@@ -134,8 +134,11 @@ sharpstack/
 2. Supports PPP pricing automatically
 3. Connect your Wise account for USD-to-INR conversion
 
+
+
 ```
 sharpstack
+├─ .eslintrc.json
 ├─ app
 │  ├─ (app)
 │  │  ├─ challenges
@@ -146,8 +149,12 @@ sharpstack
 │  │  │  └─ page.tsx
 │  │  ├─ games
 │  │  │  └─ page.tsx
+│  │  ├─ journal
+│  │  │  └─ page.tsx
 │  │  ├─ layout.tsx
 │  │  ├─ progress
+│  │  │  └─ page.tsx
+│  │  ├─ report
 │  │  │  └─ page.tsx
 │  │  └─ settings
 │  │     └─ page.tsx
@@ -175,9 +182,12 @@ sharpstack
 │  │     └─ route.ts
 │  ├─ globals.css
 │  ├─ layout.tsx
+│  ├─ onboarding
+│  │  └─ page.tsx
 │  └─ page.tsx
 ├─ components
 │  ├─ challenges
+│  ├─ CreditModals.tsx
 │  ├─ feed
 │  ├─ games
 │  └─ ui
@@ -190,8 +200,11 @@ sharpstack
 │  │  └─ server.ts
 │  └─ utils
 │     ├─ cn.ts
+│     ├─ credits.ts
 │     ├─ events.ts
-│     └─ ratelimit.ts
+│     ├─ llm.ts
+│     ├─ ratelimit.ts
+│     └─ taskgen.ts
 ├─ middleware.ts
 ├─ next.config.js
 ├─ package-lock.json

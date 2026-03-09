@@ -64,8 +64,7 @@ export function spendCredits(amount: number): boolean {
 }
 
 // ─── Supabase sync ────────────────────────────────────────────────────────────
-// Call after earn or spend if user is authenticated.
-// Takes the Supabase client + userId as params to avoid import cycles.
+// Columns match schema: ai_credits, ai_credits_progress
 
 export async function syncCreditsToSupabase(
   supabase:  any,
@@ -75,9 +74,13 @@ export async function syncCreditsToSupabase(
   try {
     await supabase
       .from("users")
-      .upsert({ id: userId, credits: state.credits, updated_at: new Date().toISOString() });
+      .upsert({
+        id:                  userId,
+        ai_credits:          state.credits,
+        ai_credits_progress: state.progress,
+        updated_at:          new Date().toISOString(),
+      });
   } catch (err) {
-    // Non-blocking — localStorage is source of truth
     console.warn("[credits] Supabase sync failed:", err);
   }
 }
@@ -90,15 +93,17 @@ export async function pullCreditsFromSupabase(
   try {
     const { data } = await supabase
       .from("users")
-      .select("credits")
+      .select("ai_credits, ai_credits_progress")
       .eq("id", userId)
       .single();
 
-    if (data?.credits != null) {
+    if (data) {
       const local = getCredits();
       // Take the max — protects against data loss if local is ahead
-      if (data.credits > local.credits) {
-        setCreditsLocal({ ...local, credits: data.credits });
+      const remoteCredits  = data.ai_credits          ?? 0;
+      const remoteProgress = data.ai_credits_progress ?? 0;
+      if (remoteCredits > local.credits) {
+        setCreditsLocal({ credits: remoteCredits, progress: remoteProgress });
       }
     }
   } catch (err) {
@@ -106,8 +111,71 @@ export async function pullCreditsFromSupabase(
   }
 }
 
+// ─── Push all local data to Supabase on sign-in ───────────────────────────────
+// Call once after a user signs in or creates an account.
+// Syncs: credits, checkins, streak, profile display name.
+
+export async function pushLocalDataToSupabase(
+  supabase: any,
+  userId:   string,
+): Promise<void> {
+  const local = getCredits();
+
+  // 1 — credits (always push local if DB row doesn't exist yet)
+  try {
+    const { data: existing } = await supabase
+      .from("users")
+      .select("ai_credits")
+      .eq("id", userId)
+      .single();
+
+    const dbCredits = existing?.ai_credits ?? 0;
+    await supabase.from("users").upsert({
+      id:                  userId,
+      ai_credits:          Math.max(local.credits, dbCredits),
+      ai_credits_progress: local.progress,
+      updated_at:          new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn("[credits] push credits failed:", err);
+  }
+
+  // 2 — checkins
+  try {
+    const raw = localStorage.getItem("ss_checkins");
+    if (raw) {
+      const checkins: any[] = JSON.parse(raw);
+      const rows = checkins.map(c => ({
+        user_id:          userId,
+        date:             c.date,
+        ai_usage:         c.aiUsage,
+        cognitive_effort: c.cognitiveEffort,
+        awareness:        c.awareness,
+        signal:           c.signal,
+        saved_at:         c.savedAt,
+      }));
+      // upsert — unique (user_id, date) constraint handles duplicates
+      await supabase.from("checkins").upsert(rows, { onConflict: "user_id,date" });
+    }
+  } catch (err) {
+    console.warn("[credits] push checkins failed:", err);
+  }
+
+  // 3 — streak
+  try {
+    const streak = parseInt(localStorage.getItem("ss_streak") ?? "0");
+    if (streak > 0) {
+      await supabase
+        .from("users")
+        .update({ streak_days: streak, updated_at: new Date().toISOString() })
+        .eq("id", userId);
+    }
+  } catch (err) {
+    console.warn("[credits] push streak failed:", err);
+  }
+}
+
 // ─── Refresh gate ─────────────────────────────────────────────────────────────
-// Tracks free challenge refreshes per day. 2 free, then 1 credit each.
 
 const DAILY_FREE_REFRESHES = 2;
 
@@ -115,7 +183,6 @@ export function getRefreshState(): { count: number; date: string } {
   const today = new Date().toDateString();
   const stored = localStorage.getItem("ss_refresh_date");
   if (stored !== today) {
-    // New day — reset
     localStorage.setItem("ss_refresh_date",  today);
     localStorage.setItem("ss_refresh_count", "0");
     return { count: 0, date: today };
