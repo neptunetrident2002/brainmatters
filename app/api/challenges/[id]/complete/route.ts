@@ -43,11 +43,12 @@ export async function POST(
   }
 
   // Fetch user profile for credit balance
-  const { data: profile } = await supabase
+  const { data: profileRaw } = await supabase
     .from("users")
-    .select("ai_credits, ai_credits_progress")
+    .select("ai_credits, ai_credits_progress, total_challenges")
     .eq("id", user.id)
     .single();
+  const profile = profileRaw as typeof profileRaw & { total_challenges: number } | null;
 
   if (!profile) return NextResponse.json({ data: null, error: { message: "User not found" } }, { status: 404 });
 
