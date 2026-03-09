@@ -1,163 +1,263 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import { pullCreditsFromSupabase } from "@/lib/utils/credits";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 const C = {
-  orange: "#E8520A", orangeLight: "#FFF0E8", orangeDim: "#B84008",
-  dark: "#1A1208", mid: "#5A4A2A", muted: "#8A7A5A",
-  border: "#C8B89A", bg: "#F5F0E8", card: "#FFFEF9", cream: "#FAF6F0",
+  orange:"#E8520A", orangeLight:"#FFF0E8", orangeDim:"#B84008",
+  dark:"#1A1208", mid:"#5A4A2A", muted:"#8A7A5A",
+  border:"#C8B89A", bg:"#F5F0E8", card:"#FFFEF9", cream:"#FAF6F0",
+  success:"#2E7D32",
 };
 
-const NAV = [
-  { id: "feed",       label: "Feed",       icon: "◎", href: "/feed" },
-  { id: "daily",      label: "Daily",      icon: "⊕", href: "/daily", dot: true },
-  { id: "challenges", label: "Challenges", icon: "✦", href: "/challenges" },
-  { id: "journal",    label: "Journal",    icon: "✐", href: "/journal" },
-  { id: "games",      label: "Games",      icon: "⬡", href: "/games" },
-  { id: "progress",   label: "Progress",   icon: "↗", href: "/progress" },
-  { id: "report",     label: "Report",     icon: "⊞", href: "/report" },
-  { id: "settings",   label: "Settings",   icon: "⊙", href: "/settings" },
+const AI_BEHAVIORS = [
+  "Write or rewrite my emails / messages",
+  "Explain a concept I don't fully understand",
+  "Debug or fix my code",
+  "Summarize a document or article",
+  "Help me make a decision",
+  "Draft content — posts, reports, proposals",
+  "Search for information I should probably know",
+  "Proofread or improve my writing",
+  "Break down a complex problem",
+  "Generate ideas when I'm stuck",
+  "Do mental math or quick calculations",
+  "Write code I could figure out myself",
+  "Plan or structure my thinking",
+  "Answer questions I haven't tried to answer first",
 ];
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-  const router   = useRouter();
+const RUSTY_SKILLS = [
+  "Writing from scratch",
+  "Problem solving step by step",
+  "Memory and recall",
+  "Critical thinking",
+  "Making decisions confidently",
+  "Spelling and grammar",
+  "Mental math",
+  "All of it, honestly",
+];
 
-  const [credits,  setCredits]  = useState(0);
-  const [progress, setProgress] = useState(0);
-  const [streak,   setStreak]   = useState(0);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [showUserMenu, setShowUserMenu] = useState(false);
+const TIME_OPTIONS = [
+  { value: 5,  label: "5 min",  desc: "Quick hits on busy days" },
+  { value: 15, label: "15 min", desc: "Focused sessions" },
+  { value: 30, label: "30 min", desc: "Deep work" },
+];
 
-  useEffect(() => {
-    const done = localStorage.getItem("ss_onboarding_done");
-    if (!done) { router.replace("/onboarding"); return; }
+const STEPS = 5;
 
-    // Load local state
-    setCredits(parseInt(localStorage.getItem("ss_credits")  ?? "0"));
-    setProgress(parseInt(localStorage.getItem("ss_progress") ?? "0"));
-    setStreak(parseInt(localStorage.getItem("ss_streak")    ?? "0"));
+export default function OnboardingPage() {
+  const router = useRouter();
+  const [step, setStep] = useState(0);
+  const [saving, setSaving] = useState(false);
 
-    // Check auth — pull credits from Supabase if signed in
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) {
-        setUserEmail(user.email ?? null);
-        pullCreditsFromSupabase(supabase, user.id).then(() => {
-          setCredits(parseInt(localStorage.getItem("ss_credits") ?? "0"));
-        });
-      }
-    });
-  }, []);
+  // Answers
+  const [lastQuery, setLastQuery]       = useState("");
+  const [behaviors, setBehaviors]       = useState<string[]>([]);
+  const [rustySkill, setRustySkill]     = useState("");
+  const [timeLimit, setTimeLimit]       = useState<number|null>(null);
+  const [recentPrompts, setRecentPrompts] = useState("");
 
-  async function handleSignOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    setUserEmail(null);
-    setShowUserMenu(false);
+  function toggleBehavior(b: string) {
+    setBehaviors(prev => prev.includes(b) ? prev.filter(x=>x!==b) : [...prev, b]);
   }
 
-  // Initials from email
-  const initials = userEmail ? userEmail[0].toUpperCase() : null;
+  function canAdvance() {
+    if (step === 0) return lastQuery.trim().length > 10;
+    if (step === 1) return behaviors.length > 0;
+    if (step === 2) return rustySkill !== "";
+    if (step === 3) return timeLimit !== null;
+    if (step === 4) return true; // optional step
+    return false;
+  }
+
+  async function finish() {
+    setSaving(true);
+
+    const profile = {
+      lastQuery: lastQuery.trim(),
+      behaviors,
+      rustySkill,
+      timeLimit,
+      recentPrompts: recentPrompts.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    localStorage.setItem("ss_profile", JSON.stringify(profile));
+    localStorage.setItem("ss_onboarding_done", "true");
+
+    // Small delay so saving state feels intentional
+    await new Promise(r => setTimeout(r, 600));
+    router.push("/feed");
+  }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "Georgia, serif" }}>
-      <style>{`* { box-sizing: border-box; } body { margin: 0; }`}</style>
+    <div style={{ minHeight:"100vh", background:C.bg, fontFamily:"Georgia, serif", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"24px 16px" }}>
 
-      <header style={{ background: C.card, borderBottom: `2px solid ${C.border}`, padding: "0 24px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 50 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Link href="/" style={{ textDecoration: "none" }}>
-            <span style={{ fontSize: 18, fontWeight: 700, color: C.orange, letterSpacing: "-0.02em" }}>BrainMatters</span>
-          </Link>
-          <span style={{ fontSize: 11, color: C.muted, borderLeft: `1px solid ${C.border}`, paddingLeft: 10, letterSpacing: "0.06em" }}>Train Your Brain. Earn Your AI.</span>
+      {/* Logo */}
+      <div style={{ marginBottom:32, textAlign:"center" }}>
+        <span style={{ fontSize:22, fontWeight:700, color:C.orange, letterSpacing:"-0.02em" }}>BrainMatters</span>
+        <p style={{ fontSize:12, color:C.muted, margin:"4px 0 0", letterSpacing:"0.06em" }}>Train Your Brain. Earn Your AI.</p>
+      </div>
+
+      {/* Progress */}
+      <div style={{ width:"100%", maxWidth:520, marginBottom:28 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+          <span style={{ fontSize:11, color:C.muted }}>Step {step+1} of {STEPS}</span>
+          <span style={{ fontSize:11, color:C.muted }}>{Math.round(((step)/STEPS)*100)}% complete</span>
         </div>
+        <div style={{ height:3, background:C.border, borderRadius:2 }}>
+          <div style={{ height:"100%", width:`${((step+1)/STEPS)*100}%`, background:C.orange, borderRadius:2, transition:"width 0.4s" }}/>
+        </div>
+      </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          {/* Credits */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.orangeLight, border: `1.5px solid ${C.orange}`, borderRadius: 20 }}>
-              <span>⚡</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: C.orange }}>{credits}</span>
-              <span style={{ fontSize: 10, color: C.orangeDim }}>credits</span>
+      {/* Card */}
+      <div style={{ width:"100%", maxWidth:520, background:C.card, border:`1.5px solid ${C.border}`, borderRadius:16, padding:"28px 28px 24px" }}>
+
+        {/* Step 0 — Last AI query */}
+        {step===0 && (
+          <div>
+            <StepLabel>The last 24 hours</StepLabel>
+            <h2 style={QStyle}>What's the last thing you asked AI to do that you could have done yourself?</h2>
+            <p style={HintStyle}>Be specific. "Write a reply to my manager about the deadline" is better than "writing."</p>
+            <textarea
+              value={lastQuery}
+              onChange={e=>setLastQuery(e.target.value)}
+              placeholder="e.g. Wrote a cold email to a potential client because I didn't want to think about the wording..."
+              style={{ width:"100%", minHeight:110, padding:"12px 14px", border:`1.5px solid ${C.border}`, borderRadius:8, fontSize:13, color:C.dark, background:C.bg, fontFamily:"Georgia, serif", outline:"none", resize:"vertical", lineHeight:1.7, boxSizing:"border-box" }}
+              autoFocus
+            />
+            <p style={{ fontSize:11, color:C.muted, marginTop:6 }}>{lastQuery.trim().length}/10 characters minimum</p>
+          </div>
+        )}
+
+        {/* Step 1 — Behavior pattern */}
+        {step===1 && (
+          <div>
+            <StepLabel>Your dependency pattern</StepLabel>
+            <h2 style={QStyle}>Which of these do you ask AI to do at least once a week?</h2>
+            <p style={HintStyle}>Select all that apply. Honesty here makes your training actually useful.</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:6, maxHeight:340, overflowY:"auto", paddingRight:4 }}>
+              {AI_BEHAVIORS.map(b => {
+                const selected = behaviors.includes(b);
+                return (
+                  <button key={b} onClick={()=>toggleBehavior(b)} style={{ padding:"10px 14px", border:`1.5px solid ${selected?C.orange:C.border}`, borderRadius:8, background:selected?C.orangeLight:"white", color:selected?C.orangeDim:C.mid, fontSize:13, cursor:"pointer", textAlign:"left", fontFamily:"Georgia, serif", transition:"all 0.15s", display:"flex", alignItems:"center", gap:10 }}>
+                    <span style={{ width:16, height:16, borderRadius:4, border:`2px solid ${selected?C.orange:C.border}`, background:selected?C.orange:"transparent", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      {selected && <span style={{ color:"white", fontSize:10, fontWeight:700 }}>✓</span>}
+                    </span>
+                    {b}
+                  </button>
+                );
+              })}
             </div>
-            <div>
-              <div style={{ fontSize: 9, color: C.muted }}>{progress}/10 to next</div>
-              <div style={{ width: 64, height: 4, background: C.border, borderRadius: 2 }}>
-                <div style={{ width: `${(progress / 10) * 100}%`, height: "100%", background: C.orange, borderRadius: 2 }} />
-              </div>
+            <p style={{ fontSize:11, color:C.orange, marginTop:8, fontWeight:700 }}>{behaviors.length} selected</p>
+          </div>
+        )}
+
+        {/* Step 2 — The shame question */}
+        {step===2 && (
+          <div>
+            <StepLabel>The honest question</StepLabel>
+            <h2 style={QStyle}>Is there something you used to be able to do without help that you now reach for AI to do?</h2>
+            <p style={HintStyle}>This becomes your primary training focus. The thing you're working to reclaim.</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {RUSTY_SKILLS.map(s => {
+                const selected = rustySkill === s;
+                return (
+                  <button key={s} onClick={()=>setRustySkill(s)} style={{ padding:"12px 16px", border:`1.5px solid ${selected?C.orange:C.border}`, borderRadius:8, background:selected?C.orangeLight:"white", color:selected?C.orangeDim:C.mid, fontSize:13, cursor:"pointer", textAlign:"left", fontFamily:"Georgia, serif", transition:"all 0.15s", fontWeight:selected?700:400 }}>
+                    {selected ? "→ " : ""}{s}
+                  </button>
+                );
+              })}
             </div>
           </div>
+        )}
 
-          {/* Auth area */}
-          {userEmail ? (
-            <div style={{ position: "relative" }}>
-              <button
-                onClick={() => setShowUserMenu(m => !m)}
-                title={userEmail}
-                style={{ width: 32, height: 32, borderRadius: "50%", background: C.dark, border: `2px solid ${C.orange}`, color: C.cream, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-              >
-                {initials}
-              </button>
-              {showUserMenu && (
-                <div style={{ position: "absolute", right: 0, top: 40, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "8px 0", minWidth: 180, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 100 }}>
-                  <div style={{ padding: "6px 16px 10px", borderBottom: `1px solid ${C.border}` }}>
-                    <div style={{ fontSize: 11, color: C.muted }}>Signed in as</div>
-                    <div style={{ fontSize: 12, color: C.dark, fontWeight: 600, wordBreak: "break-all" }}>{userEmail}</div>
-                  </div>
-                  <Link href="/settings" onClick={() => setShowUserMenu(false)} style={{ display: "block", padding: "8px 16px", fontSize: 12, color: C.mid, textDecoration: "none" }}>Settings</Link>
-                  <button onClick={handleSignOut} style={{ width: "100%", padding: "8px 16px", background: "transparent", border: "none", textAlign: "left", fontSize: 12, color: "#C62828", cursor: "pointer", fontFamily: "Georgia, serif" }}>
-                    Sign out
+        {/* Step 3 — Time constraint */}
+        {step===3 && (
+          <div>
+            <StepLabel>Your commitment</StepLabel>
+            <h2 style={QStyle}>How much time can you give to a single challenge?</h2>
+            <p style={HintStyle}>This shapes the format of your tasks — not just the difficulty. Be realistic.</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              {TIME_OPTIONS.map(({ value, label, desc }) => {
+                const selected = timeLimit === value;
+                return (
+                  <button key={value} onClick={()=>setTimeLimit(value)} style={{ padding:"16px 20px", border:`2px solid ${selected?C.orange:C.border}`, borderRadius:10, background:selected?C.orangeLight:"white", cursor:"pointer", textAlign:"left", fontFamily:"Georgia, serif", transition:"all 0.15s", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div>
+                      <span style={{ fontSize:16, fontWeight:700, color:selected?C.orange:C.dark }}>{label}</span>
+                      <span style={{ fontSize:12, color:C.muted, marginLeft:10 }}>{desc}</span>
+                    </div>
+                    {selected && <span style={{ color:C.orange, fontSize:18 }}>✓</span>}
                   </button>
-                </div>
-              )}
+                );
+              })}
             </div>
-          ) : (
-            <Link href="/login" style={{ padding: "6px 14px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.mid, fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
-              Sign in
-            </Link>
+          </div>
+        )}
+
+        {/* Step 4 — Paste recent prompts */}
+        {step===4 && (
+          <div>
+            <StepLabel>Optional — but powerful</StepLabel>
+            <h2 style={QStyle}>Paste your 3 most recent AI prompts here.</h2>
+            <p style={HintStyle}>This is the single biggest quality jump for your tasks. Copy them from ChatGPT, Claude, or wherever. Processed locally — never stored on our servers.</p>
+            <div style={{ padding:"10px 14px", background:"#0d1a0d", border:`1.5px solid ${C.success}`, borderRadius:8, marginBottom:12 }}>
+              <p style={{ fontSize:11, color:"#c0e0c0", margin:0, lineHeight:1.7 }}>
+                🔒 Your prompts are processed in your browser only. We extract patterns, not content. Nothing leaves your device raw.
+              </p>
+            </div>
+            <textarea
+              value={recentPrompts}
+              onChange={e=>setRecentPrompts(e.target.value)}
+              placeholder={"Prompt 1: Write a LinkedIn post about our product launch...\nPrompt 2: Explain why my React component isn't re-rendering...\nPrompt 3: Summarise this article for me..."}
+              style={{ width:"100%", minHeight:140, padding:"12px 14px", border:`1.5px solid ${C.border}`, borderRadius:8, fontSize:13, color:C.dark, background:C.bg, fontFamily:"Georgia, serif", outline:"none", resize:"vertical", lineHeight:1.7, boxSizing:"border-box" }}
+            />
+            <p style={{ fontSize:12, color:C.muted, marginTop:8, fontStyle:"italic" }}>
+              Skip this and your tasks will still be personalised — just less precisely. You can always add this later in Settings.
+            </p>
+          </div>
+        )}
+
+        {/* Nav */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:24 }}>
+          {step > 0
+            ? <button onClick={()=>setStep(s=>s-1)} style={{ background:"transparent", border:`1.5px solid ${C.border}`, borderRadius:8, padding:"9px 18px", color:C.mid, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"Georgia, serif" }}>← Back</button>
+            : <div/>
+          }
+
+          {step < STEPS-1 && (
+            <button onClick={()=>setStep(s=>s+1)} disabled={!canAdvance()} style={{ padding:"10px 24px", background:canAdvance()?C.dark:C.border, border:"none", borderRadius:8, color:C.cream, fontSize:13, fontWeight:700, cursor:canAdvance()?"pointer":"not-allowed", fontFamily:"Georgia, serif", transition:"background 0.2s" }}>
+              Continue →
+            </button>
+          )}
+
+          {step === STEPS-1 && (
+            <button onClick={finish} disabled={saving} style={{ padding:"10px 28px", background:saving?C.muted:C.orange, border:"none", borderRadius:8, color:"white", fontSize:13, fontWeight:700, cursor:saving?"not-allowed":"pointer", fontFamily:"Georgia, serif", transition:"background 0.2s" }}>
+              {saving ? "Building your profile…" : "Start Training →"}
+            </button>
           )}
         </div>
-      </header>
-
-      <div style={{ display: "flex", minHeight: "calc(100vh - 56px)" }}>
-        <nav style={{ width: 180, background: C.card, borderRight: `1.5px solid ${C.border}`, padding: "16px 12px", flexShrink: 0, position: "sticky", top: 56, height: "calc(100vh - 56px)", overflowY: "auto", display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1 }}>
-            {NAV.map(({ id, label, icon, href, dot }: any) => {
-              const active = pathname === href;
-              return (
-                <Link key={id} href={href} style={{ textDecoration: "none" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 12px", background: active ? C.orangeLight : "transparent", borderRadius: 8, color: active ? C.orange : C.mid, fontSize: 13, fontWeight: active ? 700 : 400, marginBottom: 2, cursor: "pointer" }}>
-                    <span style={{ fontSize: 14 }}>{icon}</span>
-                    {label}
-                    {dot && <span style={{ marginLeft: "auto", width: 6, height: 6, borderRadius: "50%", background: C.orange }} />}
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
-          <div style={{ paddingTop: 20, borderTop: `1px solid ${C.border}` }}>
-            {/* Auth nudge if not signed in */}
-            {!userEmail && (
-              <div style={{ padding: "10px 12px", background: C.orangeLight, borderRadius: 8, marginBottom: 8 }}>
-                <div style={{ fontSize: 10, color: C.orange, fontWeight: 700, marginBottom: 4 }}>Save your progress</div>
-                <Link href="/signup" style={{ fontSize: 11, color: C.orange, textDecoration: "none", fontWeight: 600 }}>Create free account →</Link>
-              </div>
-            )}
-            <div style={{ padding: "10px 12px", background: C.bg, borderRadius: 8 }}>
-              <div style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Your Streak</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: C.orange }}>🔥 {streak}</div>
-              <div style={{ fontSize: 10, color: C.muted }}>days AI-free</div>
-            </div>
-          </div>
-        </nav>
-        <main style={{ flex: 1, padding: "24px 28px", overflowY: "auto" }}>
-          {children}
-        </main>
       </div>
+
+      {/* Footer note */}
+      <p style={{ fontSize:11, color:C.muted, marginTop:20, textAlign:"center", maxWidth:400, lineHeight:1.7 }}>
+        No account needed. Your profile stays in your browser until you choose to create one.
+      </p>
     </div>
   );
 }
+
+// ── Small atoms ───────────────────────────────────────────────────────────────
+function StepLabel({ children }: { children: React.ReactNode }) {
+  return <p style={{ fontSize:10, color:C.orange, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", margin:"0 0 8px" }}>{children}</p>;
+}
+
+const QStyle: React.CSSProperties = {
+  fontSize:18, fontWeight:700, color:C.dark, fontFamily:"Georgia, serif",
+  margin:"0 0 8px", lineHeight:1.4,
+};
+
+const HintStyle: React.CSSProperties = {
+  fontSize:12, color:C.muted, margin:"0 0 16px", lineHeight:1.65,
+};
