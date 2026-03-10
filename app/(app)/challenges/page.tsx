@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { generateTask, recordTaskType, getDifficultyTier, type GeneratedTask } from "@/lib/utils/taskgen";
+import { generateTask, evaluateWriting, recordTaskType, getDifficultyTier, type GeneratedTask } from "@/lib/utils/taskgen";
 import { llmCall } from "@/lib/utils/llm";
 import { getCredits, spendCredits, earnCompletion, refreshIsFree, freeRefreshesRemaining, incrementRefreshCount } from "@/lib/utils/credits";
 import { AuthGateModal, SpendModal } from "@/components/CreditModals";
@@ -32,6 +32,8 @@ interface Challenge {
   type: string; tier: string; timeLimit: number; evalType: string;
   whatGoodLooksLike: string; status: "pending"|"active"|"done";
   startedAt?: number; completedAt?: number; elapsed?: number;
+  submissionText?: string;  // saved on completion for report context
+  supabaseId?: string;       // set after Supabase challenge creation
 }
 
 function fromTask(task: GeneratedTask): Challenge {
@@ -79,8 +81,13 @@ export default function ChallengesPage() {
   const [showHintModal,    setShowHintModal]    = useState(false);
   const [showRefreshModal, setShowRefreshModal] = useState(false);
   const timerRef = useRef<any>(null);
-  const [tier,   setTier]   = useState<string>("beginner");
-  const [isFree, setIsFree] = useState<boolean>(true);
+  const [tier,             setTier]             = useState<string>("beginner");
+  const [isFree,           setIsFree]           = useState<boolean>(true);
+  const [submissionError,  setSubmissionError]  = useState<string>("");
+  const [evaluating,       setEvaluating]       = useState(false);
+  const [evalResult,       setEvalResult]       = useState<{
+    clarity: number; depth: number; originality: number; overall: number; feedback: string;
+  } | null>(null);
 
   useEffect(() => {
     setTier(getDifficultyTier());
@@ -171,31 +178,125 @@ export default function ChallengesPage() {
     setHintLoading(false);
   }
 
-  function startChallenge(id: string) {
+  async function startChallenge(id: string) {
+    const ch = challenges.find(c => c.id === id);
+    if (!ch) return;
+
+    // Update local state immediately — UI responds instantly
     setChallenges(prev => {
       const u = prev.map(c => c.id===id ? {...c, status:"active" as const, startedAt:Date.now()} : c);
       saveChallenges(u); return u;
     });
     setActiveId(id); setElapsed(0); setText("");
+    setSubmissionError(""); setEvalResult(null);
+
+    // If authenticated, create the challenge in Supabase so completions can write to the feed
+    try {
+      const { data: { user } } = await createClient().auth.getUser();
+      if (user) {
+        const res = await fetch("/api/challenges", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({
+            title:      ch.title,
+            category:   ch.type,
+            difficulty: ch.tier,
+            recurring:  false,
+          }),
+        });
+        if (res.ok) {
+          const { data } = await res.json();
+          if (data?.id) {
+            // Store the Supabase row id so finalizeCompletion can reference it
+            setChallenges(prev => {
+              const u = prev.map(c => c.id===id ? {...c, supabaseId: data.id} : c);
+              saveChallenges(u); return u;
+            });
+          }
+        }
+      }
+    } catch {
+      // Non-fatal — local flow continues regardless
+    }
   }
 
-  function completeChallenge(id: string) {
+  // Step 1 — validate, evaluate writing tasks, then show result before crediting
+  async function handleCompleteClick(id: string) {
     if (elapsed < 120) { setTooFast(true); return; }
+
+    const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < 30) {
+      setSubmissionError("At least 30 words required. Keep going.");
+      return;
+    }
+    setSubmissionError("");
+
+    const ch = challenges.find(c => c.id === id);
+    if (!ch) return;
+
+    // Writing tasks: evaluate first, show result, wait for user to confirm
+    if (ch.evalType === "claude") {
+      setEvaluating(true);
+      try {
+        const result = await evaluateWriting(ch as any, text);
+        setEvalResult(result);
+      } catch {
+        // Evaluation failed — fall through and complete without scores
+        await finalizeCompletion(id);
+      }
+      setEvaluating(false);
+      // evalResult is now set — JSX will swap the button to "Confirm & Complete"
+      return;
+    }
+
+    // Non-writing tasks: complete immediately
+    await finalizeCompletion(id);
+  }
+
+  // Step 2 — record the completion locally and notify Supabase
+  async function finalizeCompletion(id: string) {
     clearInterval(timerRef.current);
-    const ch = challenges.find(c => c.id===id);
-    if (ch) recordTaskType(ch.type as any);
+    const ch = challenges.find(c => c.id === id);
+    if (!ch) return;
+
+    recordTaskType(ch.type as any);
+
+    // Save status, elapsed time, and the submission text for report context
     setChallenges(prev => {
-      const u = prev.map(c => c.id===id ? {...c, status:"done" as const, completedAt:Date.now(), elapsed} : c);
+      const u = prev.map(c => c.id===id
+        ? {...c, status:"done" as const, completedAt:Date.now(), elapsed, submissionText: text.trim()}
+        : c
+      );
       saveChallenges(u); return u;
     });
+
     setActiveId(null);
+    setEvalResult(null);
+
     const { state } = earnCompletion();
     setCredits(state.credits);
+
+    // Update streak
     const lastDone  = localStorage.getItem("ss_last_done_date");
     const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1);
     const streak    = parseInt(localStorage.getItem("ss_streak") ?? "0");
     localStorage.setItem("ss_streak", String(lastDone===yesterday.toDateString() ? streak+1 : 1));
     localStorage.setItem("ss_last_done_date", new Date().toDateString());
+
+    // If authenticated and we have a Supabase id, notify the complete route
+    // This writes the event that populates the feed
+    try {
+      const { data: { user } } = await createClient().auth.getUser();
+      if (user && ch.supabaseId) {
+        await fetch(`/api/challenges/${ch.supabaseId}/complete`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ useAiCredit: false, elapsedSeconds: elapsed }),
+        });
+      }
+    } catch {
+      // Non-fatal — local completion already recorded
+    }
   }
 
   const fmt        = (s: number) => `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
@@ -290,13 +391,46 @@ export default function ChallengesPage() {
             placeholder="Work through it here. No AI, no lookup — just you."
             style={{ width:"100%", minHeight:120, padding:"12px 14px", border:`1.5px solid ${C.border}`, borderRadius:8, fontSize:13, color:C.dark, background:C.bg, fontFamily:"Georgia, serif", outline:"none", resize:"vertical", lineHeight:1.75, boxSizing:"border-box", marginBottom:12 }}/>
 
+          {/* Submission error */}
+          {submissionError && (
+            <p style={{ fontSize:12, color:C.orange, fontWeight:700, margin:"-8px 0 12px" }}>{submissionError}</p>
+          )}
+
+          {/* Evaluation result — shown for writing tasks after evaluation */}
+          {evalResult && (
+            <div style={{ background:C.goldDark, border:`1.5px solid ${C.gold}`, borderRadius:10, padding:"14px 16px", marginBottom:14 }}>
+              <div style={{ fontSize:9, color:C.gold, fontWeight:700, letterSpacing:"0.12em", textTransform:"uppercase", marginBottom:10 }}>Evaluation</div>
+              <div style={{ display:"flex", gap:12, marginBottom:12, flexWrap:"wrap" }}>
+                {[
+                  { label:"Clarity",     value: evalResult.clarity     },
+                  { label:"Depth",       value: evalResult.depth       },
+                  { label:"Originality", value: evalResult.originality },
+                  { label:"Overall",     value: evalResult.overall     },
+                ].map(({ label, value }) => (
+                  <div key={label} style={{ textAlign:"center" }}>
+                    <div style={{ fontSize:20, fontWeight:700, color:C.gold, fontFamily:"Georgia, serif" }}>{value}<span style={{ fontSize:11, color:"#8a7a3a" }}>/5</span></div>
+                    <div style={{ fontSize:9, color:"#8a7a3a", textTransform:"uppercase", letterSpacing:"0.08em" }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+              <p style={{ fontSize:13, color:"#f0e8c0", margin:0, lineHeight:1.7, fontFamily:"Georgia, serif", fontStyle:"italic" }}>{evalResult.feedback}</p>
+            </div>
+          )}
+
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
             <span style={{ fontSize:11, color:C.muted }}>{text.trim().split(/\s+/).filter(Boolean).length} words</span>
             <div style={{ display:"flex", gap:8 }}>
-              <button onClick={() => { setActiveId(null); setChallenges(prev => { const u=prev.map(c=>c.id===active.id?{...c,status:"pending" as const}:c); saveChallenges(u); return u; }); }}
+              <button onClick={() => { setActiveId(null); setEvalResult(null); setSubmissionError(""); setChallenges(prev => { const u=prev.map(c=>c.id===active.id?{...c,status:"pending" as const}:c); saveChallenges(u); return u; }); }}
                 style={{ padding:"8px 14px", background:"transparent", border:`1.5px solid ${C.border}`, borderRadius:7, color:C.mid, fontSize:11, fontWeight:700, cursor:"pointer" }}>Pause</button>
-              <button onClick={()=>completeChallenge(active.id)}
-                style={{ padding:"8px 20px", background:C.success, border:"none", borderRadius:7, color:"white", fontSize:12, fontWeight:700, cursor:"pointer" }}>Mark Complete ✓</button>
+              {evalResult ? (
+                <button onClick={()=>finalizeCompletion(active.id)}
+                  style={{ padding:"8px 20px", background:C.success, border:"none", borderRadius:7, color:"white", fontSize:12, fontWeight:700, cursor:"pointer" }}>Confirm Complete →</button>
+              ) : (
+                <button onClick={()=>handleCompleteClick(active.id)} disabled={evaluating}
+                  style={{ padding:"8px 20px", background:evaluating?C.border:C.success, border:"none", borderRadius:7, color:"white", fontSize:12, fontWeight:700, cursor:evaluating?"not-allowed":"pointer" }}>
+                  {evaluating ? "Evaluating…" : "Mark Complete ✓"}
+                </button>
+              )}
             </div>
           </div>
           {active.whatGoodLooksLike && <p style={{ fontSize:11, color:C.muted, marginTop:10, fontStyle:"italic" }}>What good looks like: {active.whatGoodLooksLike}</p>}

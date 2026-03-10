@@ -453,7 +453,7 @@ async function serverLlmCall(
   user:      string,
   maxTokens: number = 700,
 ): Promise<string> {
-  const response = await fetch("/api/ai", {
+  const response = await fetch("/api/llm", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ system, user, maxTokens }),

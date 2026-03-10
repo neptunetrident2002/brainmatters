@@ -76,6 +76,10 @@ function buildPromptData(): { summary: string; completions: number; checkinCount
   const signalCounts: Record<string, number> = { Independent:0, Slipping:0, Dependent:0, Offloaded:0 };
   recentCI.forEach(c => { if (signalCounts[c.signal] !== undefined) signalCounts[c.signal]++; });
 
+  // Chronological signal sequence — lets the LLM detect direction of travel,
+  // not just aggregate counts (e.g. was Dependent last week, Independent this week)
+  const signalSequence = recentCI.map(c => c.signal).join(" → ");
+
   const avgAI  = recentCI.length ? (recentCI.reduce((s, c) => s + c.aiUsage, 0) / recentCI.length).toFixed(1) : "N/A";
   const avgEff = recentCI.length ? (recentCI.reduce((s, c) => s + c.cognitiveEffort, 0) / recentCI.length).toFixed(1) : "N/A";
   const avgAw  = recentCI.length ? (recentCI.reduce((s, c) => s + c.awareness, 0) / recentCI.length).toFixed(1) : "N/A";
@@ -99,8 +103,23 @@ function buildPromptData(): { summary: string; completions: number; checkinCount
   // Difficulty tier
   const tier = completions >= 30 ? "advanced" : completions >= 10 ? "intermediate" : "beginner";
 
+  // Submission texts from completed challenges — the most direct signal of
+  // how the user actually thinks and writes without AI assistance
+  const submissionSamples = done
+    .filter((c: any) => c.submissionText && c.submissionText.trim().length > 0)
+    .slice(-3)  // last 3 to keep the prompt focused
+    .map((c: any) => `[${c.type} · ${c.tier}] "${c.title}"\n${c.submissionText.trim()}`)
+    .join("\n\n");
+
   const summary = `
 USER BEHAVIOUR DATA — BrainMatters has analysed your interactions to identify patterns in how you engage with AI. This summary is an honest reflection of your current relationship with AI, based on the data you've generated through your completions, check-ins, and journal entries.
+
+PROFILE (from onboarding):
+- Last AI task they admitted to: ${profile?.lastQuery ?? "not set"}
+- Rusty skill they want to reclaim: ${profile?.rustySkill ?? "not set"}
+- Self-identified AI behaviours: ${profile?.behaviors?.join(", ") ?? "not set"}
+- Time commitment: ${profile?.timeLimit ?? "?"} minutes/day
+${profile?.exportThemes ? `- Behavioural themes extracted from their prompt history: ${profile.exportThemes}` : ""}
 
 ACTIVITY SUMMARY:
 - Total AI-free completions: ${completions} (${credits} credits earned)
@@ -109,7 +128,8 @@ ACTIVITY SUMMARY:
 - Challenge types completed: Writing ${byType.writing}, Recall ${byType.recall}, Logic ${byType.logic}
 
 DEPENDENCY SIGNALS (last ${recentCI.length} check-ins):
-- Dominant patterns: Independent:${signalCounts.Independent}, Slipping:${signalCounts.Slipping}, Dependent:${signalCounts.Dependent}, Offloaded:${signalCounts.Offloaded}
+- Signal sequence oldest → newest: ${signalSequence || "no data"}
+- Counts: Independent:${signalCounts.Independent}, Slipping:${signalCounts.Slipping}, Dependent:${signalCounts.Dependent}, Offloaded:${signalCounts.Offloaded}
 - Avg AI usage score: ${avgAI}/5 (1=none, 5=constant)
 - Avg cognitive effort: ${avgEff}/5 (1=delegated, 5=full effort)
 - Avg self-awareness: ${avgAw}/5 (1=not aware, 5=fully deliberate)
@@ -117,11 +137,7 @@ DEPENDENCY SIGNALS (last ${recentCI.length} check-ins):
 
 JOURNAL:
 - ${journalFreq}
-
-PROFILE (from onboarding):
-- Rusty skill: ${profile?.rustySkill ?? "not set"}
-- Self-identified AI behaviours: ${profile?.behaviors?.join(", ") ?? "not set"}
-- Time commitment: ${profile?.timeLimit ?? "?"} minutes/day
+${submissionSamples ? `\nSAMPLE SUBMISSIONS (user's own words, written without AI):\n${submissionSamples}` : ""}
 `.trim();
 
   return { summary, completions, checkinCount: checkins.length, journalCount: journalEntries.length };
@@ -210,8 +226,6 @@ export default function ReportPage() {
   }, []);
 
   async function handleGenerateClick() {
-    const authed = await checkIsAuthed();
-    if (!authed) { setShowAuthGate(true); return; }
     if (credits < REPORT_COST) return;
     setShowSpendModal(true);
   }

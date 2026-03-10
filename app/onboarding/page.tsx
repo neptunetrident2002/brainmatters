@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { getCredits } from "@/lib/utils/credits";
+import { llmCall } from "@/lib/utils/llm";
 
 const C = {
   orange:"#E8520A", orangeLight:"#FFF0E8", orangeDim:"#B84008",
@@ -81,7 +82,10 @@ export default function OnboardingPage() {
 
   async function finish() {
     setSaving(true);
-    const profile = {
+
+    // Build the base profile first — saved immediately so nothing is lost
+    // even if the optional LLM analysis below fails
+    const profile: Record<string, any> = {
       lastQuery:     lastQuery.trim(),
       behaviors,
       rustySkill,
@@ -89,9 +93,31 @@ export default function OnboardingPage() {
       recentPrompts: recentPrompts.trim(),
       createdAt:     new Date().toISOString(),
     };
+
+    // If the user pasted recent prompts, extract behavioral themes via LLM.
+    // The result is stored as exportThemes and used by taskgen to personalise
+    // task generation — this is the biggest quality signal available.
+    if (recentPrompts.trim().length > 0) {
+      try {
+        const themes = await llmCall(
+          `You extract behavioural patterns from AI prompt history. 
+Return ONLY a short plain-text summary (2-3 sentences max) describing: 
+what kinds of tasks this person delegates to AI, what cognitive work they avoid, 
+and what skills or domains their prompts suggest they work in. 
+No bullet points. No preamble. Just the summary.`,
+          `Here are the user's recent AI prompts:\n\n${recentPrompts.trim()}`,
+          200,
+        );
+        if (themes.trim()) {
+          profile.exportThemes = themes.trim();
+        }
+      } catch {
+        // Non-fatal — profile saves without exportThemes
+      }
+    }
+
     localStorage.setItem("ss_profile",         JSON.stringify(profile));
     localStorage.setItem("ss_onboarding_done", "true");
-    await new Promise(r => setTimeout(r, 400));
     setSaving(false);
     setStep(5); // advance to optional auth step
   }
