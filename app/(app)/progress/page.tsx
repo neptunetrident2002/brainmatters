@@ -38,11 +38,11 @@ interface JournalEntry {
 }
 
 interface Challenge {
-  id:          string;
-  status:      string;
-  completedAt?: number;
-  type?:       string;
-  tier?:       string;
+  id:           string;
+  status:       string;
+  completed_at?: string | null;
+  category?:    string;
+  difficulty?:  number;
 }
 
 // ─── Data loaders ─────────────────────────────────────────────────────────────
@@ -65,6 +65,19 @@ function loadChallenges(): Challenge[] {
   catch { return []; }
 }
 
+async function fetchChallengesFromAPI(): Promise<Challenge[]> {
+  try {
+    const res = await fetch("/api/challenges", { cache: "no-store" });
+    if (!res.ok) return [];
+    const json = await res.json();
+    // API returns { data: [...], error: null }
+    const arr: any[] = Array.isArray(json) ? json : (json.data ?? []);
+    return arr.filter((c: any) => c && c.id && c.status);
+  } catch {
+    return [];
+  }
+}
+
 // ─── Derived calculations ─────────────────────────────────────────────────────
 
 // Independence score 0–100 from a single check-in
@@ -84,15 +97,19 @@ function buildActivityMap(
   const map = new Map<string, number>();
 
   const bump = (dateStr: string, amount: number) => {
+    if (!dateStr || dateStr === "Invalid Date") return;
     map.set(dateStr, Math.min(4, (map.get(dateStr) ?? 0) + amount));
   };
 
-  // Completed challenges
+  // Completed challenges — status is "completed_free" or "completed_credit", field is completed_at
   challenges
-    .filter(c => c.status === "done" && c.completedAt)
+    .filter(c => (c.status === "completed_free" || c.status === "completed_credit") && c.completed_at != null)
     .forEach(c => {
-      const d = new Date(c.completedAt!).toDateString();
-      bump(d, 2);
+      const ts = Date.parse(c.completed_at as string);
+      if (!isNaN(ts)) {
+        const d = new Date(ts).toDateString();
+        bump(d, 2);
+      }
     });
 
   // Journal entries
@@ -101,9 +118,11 @@ function buildActivityMap(
   // Check-ins
   checkins.forEach(c => bump(c.date, 1));
 
-  // Daily task completions
-  const dailyDone = localStorage.getItem("ss_daily_done");
-  if (dailyDone) bump(dailyDone, 2);
+  // Daily task completions (only safe to call on client)
+  try {
+    const dailyDone = localStorage.getItem("ss_daily_done");
+    if (dailyDone) bump(dailyDone, 2);
+  } catch { /* SSR guard */ }
 
   return map;
 }
@@ -126,8 +145,12 @@ function journalStreak(entries: JournalEntry[]): number {
 // Compute longest challenge streak from completedAt timestamps
 function longestStreak(challenges: Challenge[]): number {
   const done = challenges
-    .filter(c => c.status === "done" && c.completedAt)
-    .map(c => new Date(c.completedAt!).toDateString());
+    .filter(c => (c.status === "completed_free" || c.status === "completed_credit") && c.completed_at != null)
+    .map(c => {
+      const ts = Date.parse(c.completed_at as string);
+      return isNaN(ts) ? null : new Date(ts).toDateString();
+    })
+    .filter(Boolean) as string[];
   const unique = Array.from(new Set(done)).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
   let max = 0, curr = 0;
   for (let i = 0; i < unique.length; i++) {
@@ -617,27 +640,50 @@ export default function ProgressPage() {
   const [activityMap,  setActivityMap]  = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
-    const cr  = parseInt(localStorage.getItem("ss_credits")  ?? "0");
-    const pr  = parseInt(localStorage.getItem("ss_progress") ?? "0");
-    const st  = parseInt(localStorage.getItem("ss_streak")   ?? "0");
-    const ci  = loadCheckins();
-    const je  = loadJournalEntries();
-    const ch  = loadChallenges();
+    async function loadAll() {
+      const cr  = parseInt(localStorage.getItem("ss_credits")  ?? "0");
+      const pr  = parseInt(localStorage.getItem("ss_progress") ?? "0");
+      const st  = parseInt(localStorage.getItem("ss_streak")   ?? "0");
+      const ci  = loadCheckins();
+      const je  = loadJournalEntries();
 
-    setCredits(cr);
-    setProgress(pr);
-    setStreak(st);
-    setCompletions(cr * 10 + pr);
-    setCheckins(ci);
-    setJournalEntries(je);
-    setChallenges(ch);
-    setActivityMap(buildActivityMap(ch, je, ci));
-    setLoaded(true);
+      // Fetch from API (Supabase); fall back to localStorage cache
+      let ch = await fetchChallengesFromAPI();
+      if (ch.length === 0) ch = loadChallenges();
+
+
+      setCredits(cr);
+      setProgress(pr);
+      setStreak(st);
+      setCompletions(cr * 10 + pr);
+      setCheckins(ci);
+      setJournalEntries(je);
+      setChallenges(ch);
+      setActivityMap(buildActivityMap(ch, je, ci));
+      setLoaded(true);
+    }
+
+    loadAll();
+
+    // Re-load when user navigates back to this tab from /challenges
+    const onVisible = () => { if (document.visibilityState === "visible") loadAll(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    // Cross-tab localStorage changes
+    window.addEventListener("storage", loadAll);
+    // Same-tab custom event
+    window.addEventListener("ss_data_updated", loadAll);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("storage", loadAll);
+      window.removeEventListener("ss_data_updated", loadAll);
+    };
   }, []);
 
   if (!loaded) return null;
 
-  const completedChallenges = challenges.filter(c => c.status === "done");
+  const completedChallenges = challenges.filter(c => c.status === "completed_free" || c.status === "completed_credit");
   const jStreak             = journalStreak(journalEntries);
   const longestCStreak      = longestStreak(challenges);
   const totalWords          = journalEntries.reduce((s, e: any) => s + (e.wordCount ?? 0), 0);
@@ -729,11 +775,11 @@ export default function ProgressPage() {
             Challenge Breakdown
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {(["writing", "recall", "logic"] as const).map(type => {
-              const count = completedChallenges.filter(c => c.type === type).length;
+            {(["Writing", "Logic", "Coding"] as const).map(type => {
+              const count = completedChallenges.filter(c => c.category === type).length;
               const pct   = completedChallenges.length > 0 ? Math.round((count / completedChallenges.length) * 100) : 0;
-              const TYPE_COLOR = { writing:"#6A1B9A", recall:"#1565C0", logic:"#1B5E20" };
-              const TYPE_BG    = { writing:"#F3E5F5", recall:"#E3F2FD", logic:"#E8F5E9" };
+              const TYPE_COLOR: Record<string,string> = { Writing:"#6A1B9A", Logic:"#1B5E20", Coding:"#1565C0" };
+              const TYPE_BG:    Record<string,string> = { Writing:"#F3E5F5", Logic:"#E8F5E9", Coding:"#E3F2FD" };
               return (
                 <div key={type} style={{ flex: 1, minWidth: 80, textAlign: "center", padding: "12px 8px", background: TYPE_BG[type], borderRadius: 10 }}>
                   <div style={{ fontSize: 20, fontWeight: 700, color: TYPE_COLOR[type], fontFamily: "Georgia, serif" }}>{count}</div>

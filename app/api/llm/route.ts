@@ -15,7 +15,7 @@ const PROVIDERS: Record<LLMProvider, {
   format:  "openai-compat" | "anthropic-native";
 }> = {
   gemini: {
-    model:   "gemini-1.5-flash",
+    model:   "gemini-2.0-flash",
     apiUrl:  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
     getKey:  () => process.env.GEMINI_API_KEY ?? "",
     format:  "openai-compat",
